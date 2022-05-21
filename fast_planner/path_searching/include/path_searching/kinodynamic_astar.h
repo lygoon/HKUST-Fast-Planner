@@ -104,8 +104,12 @@ class NodeHashTable {
 class KinodynamicAstar {
  private:
   /* ---------- main data structure ---------- */
+
+  //定义路径点指针容器：path_node_pool_
   vector<PathNodePtr> path_node_pool_;
+  //use_node_num_：开集中Node的数量
   int use_node_num_, iter_num_;
+  //定义
   NodeHashTable expanded_nodes_;
   std::priority_queue<PathNodePtr, std::vector<PathNodePtr>, NodeComparator>
       open_set_;
@@ -145,8 +149,9 @@ class KinodynamicAstar {
   vector<double> quartic(double a, double b, double c, double d, double e);
   bool computeShotTraj(Eigen::VectorXd state1, Eigen::VectorXd state2,
                        double time_to_goal);
-  double estimateHeuristic(Eigen::VectorXd x1, Eigen::VectorXd x2,
-                           double& optimal_time);
+  //启发函数的计算   
+  //对应文章中的III.B小节，主要原理是利用庞特里亚金原理解决两点边值问题，得到最优解后用最优解的控制代价作为启发函数。                  
+  double estimateHeuristic(Eigen::VectorXd x1, Eigen::VectorXd x2, double& optimal_time);
 
   /* state propagation */
   void stateTransit(Eigen::Matrix<double, 6, 1>& state0,
@@ -163,6 +168,10 @@ class KinodynamicAstar {
   void setParam(ros::NodeHandle& nh);
   void init();
   void reset();
+
+  //search函数的参数包含起始点以及重点的位置，速度，加速度。
+  //以及两个标志位init 和dynamic，还有一个搜索起始时间。
+  //功能：该函数主要是将起始点及目标点的三维位置转化至栅格地图的index. 并计算第一个扩展点的Heuristic cost.
   int search(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
              Eigen::Vector3d start_acc, Eigen::Vector3d end_pt,
              Eigen::Vector3d end_vel, bool init, bool dynamic = false,

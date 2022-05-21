@@ -30,8 +30,10 @@ using namespace std;
 using namespace Eigen;
 
 namespace fast_planner {
-Astar::~Astar() {
-  for (int i = 0; i < allocate_num_; i++) {
+Astar::~Astar()
+{
+  for (int i = 0; i < allocate_num_; i++) 
+  {
     delete path_node_pool_[i];
   }
 }

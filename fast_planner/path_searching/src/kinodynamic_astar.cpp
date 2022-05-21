@@ -41,62 +41,83 @@ KinodynamicAstar::~KinodynamicAstar()
 int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, Eigen::Vector3d start_a,
                              Eigen::Vector3d end_pt, Eigen::Vector3d end_v, bool init, bool dynamic, double time_start)
 {
+
+  /* ---------- （1）将起始点及目标点的三维位置转化至栅格地图的index. 并计算第一个扩展点的Heuristic cost ---------- */
   start_vel_ = start_v;
   start_acc_ = start_a;
-
-  PathNodePtr cur_node = path_node_pool_[0];
-  cur_node->parent = NULL;
+  //设置第一个节点
+  PathNodePtr cur_node = path_node_pool_[0];//路径点指针容器第一个位置定义为当前点
+  cur_node->parent = NULL;//容器操作：parent/state/index
   cur_node->state.head(3) = start_pt;
   cur_node->state.tail(3) = start_v;
-  cur_node->index = posToIndex(start_pt);
-  cur_node->g_score = 0.0;
+  cur_node->index = posToIndex(start_pt);//将起始点的三维位置转化至栅格地图的index
+  cur_node->g_score = 0.0;//f = g + h，这是g_score是起始点到当前点的代价值
 
+  //设置最后一个节点
   Eigen::VectorXd end_state(6);
   Eigen::Vector3i end_index;
   double time_to_goal;
 
   end_state.head(3) = end_pt;
   end_state.tail(3) = end_v;
-  end_index = posToIndex(end_pt);
-  cur_node->f_score = lambda_heu_ * estimateHeuristic(cur_node->state, end_state, time_to_goal);
-  cur_node->node_state = IN_OPEN_SET;
-  open_set_.push(cur_node);
+  end_index = posToIndex(end_pt);//将目标点的三维位置转化至栅格地图的index
+  
+  //计算启发代价值f
+  cur_node->f_score = lambda_heu_ * estimateHeuristic(cur_node->state, end_state, time_to_goal);//
+  cur_node->node_state = IN_OPEN_SET;//把当前点的状态设为在开集中
+  
+  //把起点放入open_list和expanded_nodes_
+  open_set_.push(cur_node);//把当前点压入开集
+
   use_node_num_ += 1;
 
-  if (dynamic)
+  if (dynamic)//dynamic：函数传入的标志位，为1则开始搜寻
   {
-    time_origin_ = time_start;
+    time_origin_ = time_start;//传入时间
     cur_node->time = time_start;
     cur_node->time_idx = timeToIndex(time_start);
-    expanded_nodes_.insert(cur_node->index, cur_node->time_idx, cur_node);
+    expanded_nodes_.insert(cur_node->index, cur_node->time_idx, cur_node);//把当前点放入已经扩展的
     // cout << "time start: " << time_start << endl;
   }
   else
     expanded_nodes_.insert(cur_node->index, cur_node);
 
-  PathNodePtr neighbor = NULL;
-  PathNodePtr terminate_node = NULL;
-  bool init_search = init;
-  const int tolerance = ceil(1 / resolution_);
+  PathNodePtr neighbor = NULL;//邻节点
+  PathNodePtr terminate_node = NULL;//终止节点
+  bool init_search = init;//判断hybrid A*有没有初始化成功
+  const int tolerance = ceil(1 / resolution_);//ceil向上取整
 
-  while (!open_set_.empty())
+
+ /* ---------- （2）搜索扩张节点迭代循环 ---------- */
+  while (!open_set_.empty())//开集非空则进入循环
   {
-    cur_node = open_set_.top();
+    /* --- 1）从open_list优先级队列中取出f(n) = g(n) + h(n)代价值最小的节点 get lowest f_score node ---------- */
+    cur_node = open_set_.top();//取出栈顶节点，栈顶节点就是代价值最小的节点
 
     // Terminate?
+    /* --- 2）判断当前节点是否超出horizon或是离终点较近了，并计算一条直达曲线，检查这条曲线上是否存在。若存在，则搜索完成，返回路径点即可 ---------- */
     bool reach_horizon = (cur_node->state.head(3) - start_pt).norm() >= horizon_;
+    //判断是否距离终点比较近了
     bool near_end = abs(cur_node->index(0) - end_index(0)) <= tolerance &&
                     abs(cur_node->index(1) - end_index(1)) <= tolerance &&
                     abs(cur_node->index(2) - end_index(2)) <= tolerance;
 
+    //若距离终点比较近了，并且没有发生碰撞，则计算一条直达曲线，检查这条曲线上是否存在。若存在，则搜索完成，返回路径点
+    //后来我们直接认为就到达终点了，不用这么严谨麻烦
     if (reach_horizon || near_end)
     {
       terminate_node = cur_node;
       retrievePath(terminate_node);
       if (near_end)
       {
-        // Check whether shot traj exist
+        // Check whether shot traj exist  
+        /* 计算一条直达曲线one shot trajectory */ 
+        //计算最优控制时间time_to_goal
         estimateHeuristic(cur_node->state, end_state, time_to_goal);
+        
+        //第二个重要的函数ComputeShotTraj. 即利用庞特里亚金原理解一个两点边值问题。
+        //因为最优控制时间已经在estimateHeuristic中计算过了，所以这里只要引入该时间进行多项式计算即可。
+        //这部分的目的是为了验证该轨迹是安全的，即不发生碰撞，速度、加速度不超限。
         computeShotTraj(cur_node->state, end_state, time_to_goal);
         if (init_search)
           ROS_ERROR("Shot in first search loop!");
@@ -104,7 +125,7 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
     }
     if (reach_horizon)
     {
-      if (is_shot_succ_)
+      if (is_shot_succ_)//is_shot_succ_，标志位为1
       {
         std::cout << "reach end" << std::endl;
         return REACH_END;
@@ -134,18 +155,31 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
         return NO_PATH;
       }
     }
+
+    /* ---3）若当前节点没有抵达终点，就要进行节点扩张 ---------- */
+
+    //以上代码在当前节点的基础上，根据对输入、时间的离散进行扩展得到临时节点tmp
+    //首先判断节点是否已经被扩展过，即是否与当前节点在同一个节点
+    //检查速度约束，检查碰撞，都通过的话，就计算当前节点的g_score以及f_score.
+    //其中的state transit函数即通过前向积分得到扩展节点的位置和速度。接下来，就要进行节点剪枝
+
+    //1、在open_list中删除节点，并在close_list中添加节点
     open_set_.pop();
     cur_node->node_state = IN_CLOSE_SET;
     iter_num_ += 1;
-
+    
+    //2、初始化状态传递
     double res = 1 / 2.0, time_res = 1 / 1.0, time_res_init = 1 / 20.0;
     Eigen::Matrix<double, 6, 1> cur_state = cur_node->state;
     Eigen::Matrix<double, 6, 1> pro_state;
     vector<PathNodePtr> tmp_expand_nodes;
     Eigen::Vector3d um;
     double pro_t;
+
     vector<Eigen::Vector3d> inputs;
     vector<double> durations;
+
+    //3、判断节点是已经被扩展过，弹出节点
     if (init_search)
     {
       inputs.push_back(start_acc_);
@@ -155,7 +189,8 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
       init_search = false;
     }
     else
-    {
+    { 
+      // 3、判断节点没有被扩展过，把这个节点存下来
       for (double ax = -max_acc_; ax <= max_acc_ + 1e-3; ax += max_acc_ * res)
         for (double ay = -max_acc_; ay <= max_acc_ + 1e-3; ay += max_acc_ * res)
           for (double az = -max_acc_; az <= max_acc_ + 1e-3; az += max_acc_ * res)
@@ -167,6 +202,7 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
         durations.push_back(tau);
     }
 
+    //4、状态传递循环迭代，检查速度约束，检查碰撞，都通过的话，就计算当前节点的g_score以及f_score.并且对重复的扩展节点进行剪枝
     // cout << "cur state:" << cur_state.head(3).transpose() << endl;
     for (int i = 0; i < inputs.size(); ++i)
       for (int j = 0; j < durations.size(); ++j)
@@ -179,6 +215,7 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
         Eigen::Vector3d pro_pos = pro_state.head(3);
 
         // Check if in close set
+        // 判断节点若在不在close_list中 
         Eigen::Vector3i pro_id = posToIndex(pro_pos);
         int pro_t_id = timeToIndex(pro_t);
         PathNodePtr pro_node = dynamic ? expanded_nodes_.find(pro_id, pro_t_id) : expanded_nodes_.find(pro_id);
@@ -190,6 +227,7 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
         }
 
         // Check maximal velocity
+        // 判断节点最大速度
         Eigen::Vector3d pro_v = pro_state.tail(3);
         if (fabs(pro_v(0)) > max_vel_ || fabs(pro_v(1)) > max_vel_ || fabs(pro_v(2)) > max_vel_)
         {
@@ -199,6 +237,7 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
         }
 
         // Check not in the same voxel
+        // 判断节点不在同样的网格中 not in the same voxel
         Eigen::Vector3i diff = pro_id - cur_node->index;
         int diff_time = pro_t_id - cur_node->time_idx;
         if (diff.norm() == 0 && ((!dynamic) || diff_time == 0))
@@ -209,13 +248,14 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
         }
 
         // Check safety
+        //判断节点是否发生碰撞 collision free
         Eigen::Vector3d pos;
         Eigen::Matrix<double, 6, 1> xt;
         bool is_occ = false;
         for (int k = 1; k <= check_num_; ++k)
         {
           double dt = tau * double(k) / double(check_num_);
-          stateTransit(cur_state, xt, um, dt);
+          stateTransit(cur_state, xt, um, dt);//状态传递，通过前向积分得到扩展节点的位置和速度
           pos = xt.head(3);
           if (edt_environment_->sdf_map_->getInflateOccupancy(pos) == 1 )
           {
@@ -229,16 +269,33 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
             std::cout << "safe" << std::endl;
           continue;
         }
-
+        //计算代价值 compute cost
         double time_to_goal, tmp_g_score, tmp_f_score;
+        //计算当前节点的真实的代价G值
         tmp_g_score = (um.squaredNorm() + w_time_) * tau + cur_node->g_score;
+        //计算启发式代价f值，f = g + h
         tmp_f_score = tmp_g_score + lambda_heu_ * estimateHeuristic(pro_state, end_state, time_to_goal);
 
         // Compare nodes expanded from the same parent
-        bool prune = false;
+         /* ----------5)在循环中对比扩展节点,进行节点剪枝---------- */
+        // 首先判断当前临时扩展节点与current node的其他临时扩展节点是否在同一个voxel中，如果是的话，就要进行剪枝。
+        // 要判断当前临时扩展节点的fscore是否比同一个voxel的对比fscore小，如果是的话，则更新这一Voxel节点为当前临时扩展节点。
+        // 如果不用剪枝的话，则首先判断当前临时扩展节点pro_node是否出现在open集中，
+        // 如果不是存在于open集的话，则可以直接将pro_node加入open集中。
+        // 如果是存在于open集但还未扩展的话，则比较当前临时扩展节点与对应VOXEL节点的fscore,若更小，则更新voxel中的节为当前临时扩展节点。
+
+        // 需要进行说明的是，在Fast planner的实现中，
+        // open集是通过两个数据结构实现的，
+        // 一个队列用来存储，弹出open集中的节点。
+        // 另一个哈希表NodeHashtable 用来查询节点是否已经存在于open集中。
+        // 而判断一个节点是否存在于close set中，则是通过Nodehashtable 与nodestate来决定的，
+        // 如果nodeState 是 InCloseSet, 且存在于NodeHashtable, 则说明该节点已经被扩展过
+
+        bool prune = false;//剪枝标志位
         for (int j = 0; j < tmp_expand_nodes.size(); ++j)
         {
           PathNodePtr expand_node = tmp_expand_nodes[j];
+          // 首先判断当前临时扩展节点与current node的其他临时扩展节点是否在同一个voxel中，如果是的话就是扩展的节点多余了，就要进行剪枝。
           if ((pro_id - expand_node->index).norm() == 0 && ((!dynamic) || pro_t_id == expand_node->time_idx))
           {
             prune = true;
@@ -291,8 +348,10 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
               return NO_PATH;
             }
           }
+          // 如果不用剪枝的话，则首先判断当前临时扩展节点pro_node是否出现在open集中
           else if (pro_node->node_state == IN_OPEN_SET)
           {
+            // 如果是存在于open集但还未扩展的话，则比较当前临时扩展节点与对应VOXEL节点的fscore,若更小，则更新voxel中的节为当前临时扩展节点。
             if (tmp_g_score < pro_node->g_score)
             {
               // pro_node->index = pro_id;
@@ -306,6 +365,7 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
                 pro_node->time = cur_node->time + tau;
             }
           }
+          // 如果不是存在于open集的话，则可以直接将pro_node加入open集中
           else
           {
             cout << "error type in searching: " << pro_node->node_state << endl;
@@ -315,6 +375,7 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
     // init_search = false;
   }
 
+  /* ----------5）open_list已经遍历完成了，没有搜索到路径 open set empty, no path ---------- */
   cout << "open set empty, no path!" << endl;
   cout << "use node num: " << use_node_num_ << endl;
   cout << "iter num: " << iter_num_ << endl;
@@ -355,6 +416,7 @@ void KinodynamicAstar::retrievePath(PathNodePtr end_node)
 
   reverse(path_nodes_.begin(), path_nodes_.end());
 }
+
 double KinodynamicAstar::estimateHeuristic(Eigen::VectorXd x1, Eigen::VectorXd x2, double& optimal_time)
 {
   const Vector3d dp = x2.head(3) - x1.head(3);
@@ -588,6 +650,8 @@ void KinodynamicAstar::reset()
   has_path_ = false;
 }
 
+//getKinoTraj这一函数多作用是在完成路径搜索后按照预设的时间分辨率delta_t通过节点回溯和状态前向积分得到分辨率更高的路径点。
+//如果最后的shot trajectory存在的话，则还要加上最后一段shot trajectory(即通过computeshottraj)算出来得到的。
 std::vector<Eigen::Vector3d> KinodynamicAstar::getKinoTraj(double delta_t)
 {
   vector<Vector3d> state_list;
@@ -633,6 +697,7 @@ std::vector<Eigen::Vector3d> KinodynamicAstar::getKinoTraj(double delta_t)
   return state_list;
 }
 
+//getSamples这一函数则是离散的获得一些轨迹点以及起始点的速度与加速度。
 void KinodynamicAstar::getSamples(double& ts, vector<Eigen::Vector3d>& point_set,
                                   vector<Eigen::Vector3d>& start_end_derivatives)
 {
